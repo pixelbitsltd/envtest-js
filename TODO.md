@@ -4,7 +4,6 @@
 
 Features upstream envtest implements and tests that envtest-js doesn't have yet:
 
-- [ ] `AddUser` (plane.AddUser / auth.go CertAuthn): provision additional users with their own client certs, REST config, and kubectl-ready kubeconfig — e.g. for testing RBAC as a non-admin identity.
 - [ ] `UseExistingCluster`: attach to a pre-existing cluster via kubeconfig instead of spawning a control plane (envtest_test.go Stop cleanup test exercises it).
 - [ ] Cache management à la `setup-envtest list`/`cleanup` (store_test.go): enumerate and remove cached binary versions.
 

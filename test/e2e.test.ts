@@ -330,6 +330,30 @@ describe("e2e: real control plane", () => {
     expect(webhookServer.calls).toContain("/convert"); // service.path survived the rewrite
   });
 
+  // Bun-only: only the bun:test glue shares a process with the live
+  // TestEnvironment (vitest workers get the serialized config across the
+  // globalSetup process boundary — fresh-env coverage for Node is below).
+  // Identity is verified through kubectl: a separate process, so Bun's
+  // process-wide TLS trust cache can't hand it the admin's socket.
+  if (process.versions.bun) {
+    it("addUser provisions an identity kubectl can use against the shared env", async () => {
+      const { envtest } = await import("../src/glue/bun.js");
+      const user = await envtest().addUser({ name: "bun-user", groups: ["bun-group"] });
+
+      const { stdout } = await execFileP(config.binaries.kubectl, [
+        "--kubeconfig",
+        user.kubeconfigPath,
+        "auth",
+        "whoami",
+        "-o",
+        "json",
+      ]);
+      const userInfo = JSON.parse(stdout).status.userInfo;
+      expect(userInfo.username).toBe("bun-user");
+      expect(userInfo.groups).toContain("bun-group");
+    });
+  }
+
   // Node-only: Bun pools TLS connections without keying on client
   // credentials (and ignores `agent` options), so this certless request
   // silently reuses the authenticated socket from earlier tests and gets
@@ -390,9 +414,64 @@ if (!process.versions.bun && process.platform !== "darwin") {
   });
 }
 
-// Node-only: restarting mints a second CA in-process, which Bun's cached
-// TLS trust context cannot verify (see the custom listenAddress note).
+// Node-only: needs the live TestEnvironment instance, which under vitest
+// means booting a fresh one here — and a second in-process environment's CA
+// is exactly what Bun's cached TLS trust context cannot verify (see the
+// custom listenAddress note). Bun coverage runs against the shared env above.
 if (!process.versions.bun) {
+  describe("addUser", () => {
+    // Upstream envtest_test: "should provision a new user that behaves
+    // when the flow is correct" (plane.AddUser / CertAuthn).
+    it("provisions users with their own certs, REST config, and kubeconfig", async () => {
+      const env = new TestEnvironment({ version: process.env.ENVTEST_K8S_VERSION });
+      await expect(env.addUser({ name: "too-early" })).rejects.toThrow("not started");
+
+      const config = await env.start();
+      try {
+        const user = await env.addUser({ name: "jane", groups: ["group1", "group2"] });
+        expect(user.user).toBe("jane");
+        expect(user.server).toBe(config.server);
+        expect(user.certPem).not.toBe(config.certPem);
+
+        // The apiserver authenticates the new cert and maps CN -> user,
+        // O -> groups.
+        const whoami = await restRequestOk(
+          user,
+          "POST",
+          "/apis/authentication.k8s.io/v1/selfsubjectreviews",
+          { apiVersion: "authentication.k8s.io/v1", kind: "SelfSubjectReview" },
+        );
+        const userInfo = whoami.json.status.userInfo;
+        expect(userInfo.username).toBe("jane");
+        expect(userInfo.groups).toEqual(
+          expect.arrayContaining(["group1", "group2", "system:authenticated"]),
+        );
+
+        // Not an admin: RBAC denies what system:masters may do.
+        const denied = await restRequest(user, "GET", "/api/v1/namespaces");
+        expect(denied.status).toBe(403);
+
+        // The written kubeconfig is kubectl-ready.
+        const { stdout } = await execFileP(config.binaries.kubectl, [
+          "--kubeconfig",
+          user.kubeconfigPath,
+          "auth",
+          "whoami",
+          "-o",
+          "json",
+        ]);
+        expect(JSON.parse(stdout).status.userInfo.username).toBe("jane");
+
+        // Names that sanitize to the same filename get distinct files.
+        const colon = await env.addUser({ name: "system:weird" });
+        const slash = await env.addUser({ name: "system/weird" });
+        expect(colon.kubeconfigPath).not.toBe(slash.kubeconfigPath);
+      } finally {
+        await env.stop();
+      }
+    }, 120_000);
+  });
+
   describe("environment lifecycle", () => {
     // Upstream plane_test: "should be able to restart".
     it("can be restarted: stop() then start() on the same instance", async () => {

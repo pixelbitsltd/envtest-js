@@ -1,5 +1,11 @@
 export { TestEnvironment } from "./testenv.js";
-export type { TestEnvironmentOptions, EnvtestConfig, WebhookServing } from "./testenv.js";
+export type {
+  TestEnvironmentOptions,
+  EnvtestConfig,
+  WebhookServing,
+  User,
+  AuthenticatedUser,
+} from "./testenv.js";
 
 export {
   installWebhooks,

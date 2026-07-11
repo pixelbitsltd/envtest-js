@@ -39,6 +39,8 @@ const API_SERVER_CERT_NAMES = [
 const ADMIN_USER = "envtest-admin";
 const ADMIN_GROUPS = ["system:masters"];
 
+const b64 = (pem: string) => Buffer.from(pem).toString("base64");
+
 export interface TestEnvironmentOptions extends ResolveBinariesOptions {
   /** CRD manifests (files or directories) to install after startup. */
   crdDirectoryPaths?: string[];
@@ -99,6 +101,30 @@ export interface WebhookServing {
   configurationNames: string[];
 }
 
+/** An identity to provision with addUser() (upstream: envtest.User). */
+export interface User {
+  /** Username, mapped from the client certificate's CN. */
+  name: string;
+  /** Group memberships, mapped from the certificate's O values. */
+  groups?: string[];
+}
+
+/**
+ * Credentials for a user provisioned via addUser() (upstream:
+ * envtest.AuthenticatedUser): ready-to-use REST config plus a kubectl-ready
+ * kubeconfig written into the environment's temp dir.
+ */
+export interface AuthenticatedUser extends RestConfig {
+  user: string;
+  groups: string[];
+  /** Base64 of caPem/certPem/keyPem — the kubeconfig data field encoding. */
+  caData: string;
+  certData: string;
+  keyData: string;
+  kubeconfigPath: string;
+  kubeconfigYaml: string;
+}
+
 export interface EnvtestConfig extends RestConfig {
   /** Base64 of caPem/certPem/keyPem — the kubeconfig data field encoding. */
   caData: string;
@@ -130,6 +156,9 @@ export class TestEnvironment {
   private apiServer: APIServer | undefined;
   private workDir: string | undefined;
   private _config: EnvtestConfig | undefined;
+  /** Kept after start() so addUser() can mint further client certs. */
+  private ca: TinyCA | undefined;
+  private userKubeconfigNames = new Set<string>();
 
   constructor(private readonly options: TestEnvironmentOptions = {}) {}
 
@@ -163,6 +192,7 @@ export class TestEnvironment {
         servingNames.push(listenAddress);
       }
       const ca = await TinyCA.create();
+      this.ca = ca;
       const serving = await ca.newServingCert(...servingNames);
       const admin = await ca.newClientCert(ADMIN_USER, ADMIN_GROUPS);
       const saKeys = await generateServiceAccountKeys();
@@ -308,7 +338,6 @@ export class TestEnvironment {
         });
       }
 
-      const b64 = (pem: string) => Buffer.from(pem).toString("base64");
       this._config = {
         ...restConfig,
         caData: b64(restConfig.caPem),
@@ -334,6 +363,58 @@ export class TestEnvironment {
     webhook: WebhookServing | undefined,
   ): InstallCRDsOptions["conversionWebhook"] {
     return webhook && { host: webhook.host, port: webhook.port, caPem: webhook.caPem };
+  }
+
+  /**
+   * Provision an additional user recognized by the running apiserver
+   * (upstream: Environment.AddUser). The environment's CA signs a client
+   * cert with CN=name / O=groups, so the identity authenticates immediately
+   * — pair it with RBAC objects to test access as a non-admin.
+   */
+  async addUser(user: User): Promise<AuthenticatedUser> {
+    const config = this.config; // throws when not started
+    if (!user.name) throw new Error("user name is required");
+    if (!this.ca || !this.workDir) throw new Error("TestEnvironment not started");
+
+    const groups = user.groups ?? [];
+    const { certPem, keyPem } = await this.ca.newClientCert(user.name, groups);
+    const kubeconfigYaml = buildKubeconfig({
+      server: config.server,
+      caPem: config.caPem,
+      clientCertPem: certPem,
+      clientKeyPem: keyPem,
+      userName: user.name,
+    });
+    const kubeconfigPath = path.join(this.workDir, this.userKubeconfigName(user.name));
+    // Like the admin kubeconfig, this inlines the client key: owner-only.
+    await fsp.writeFile(kubeconfigPath, kubeconfigYaml, { mode: 0o600 });
+
+    return {
+      server: config.server,
+      caPem: config.caPem,
+      certPem,
+      keyPem,
+      caData: config.caData,
+      certData: b64(certPem),
+      keyData: b64(keyPem),
+      kubeconfigPath,
+      kubeconfigYaml,
+      user: user.name,
+      groups,
+    };
+  }
+
+  /**
+   * Usernames may contain characters that are invalid in filenames (":" in
+   * system:* names is forbidden on Windows), and distinct names can collide
+   * once sanitized — so dedupe with a counter suffix.
+   */
+  private userKubeconfigName(userName: string): string {
+    const safe = userName.replace(/[^A-Za-z0-9._-]/g, "-");
+    let name = `kubeconfig-${safe}`;
+    for (let i = 2; this.userKubeconfigNames.has(name); i++) name = `kubeconfig-${safe}-${i}`;
+    this.userKubeconfigNames.add(name);
+    return name;
   }
 
   /** Install additional CRDs into a running environment. */
@@ -375,6 +456,8 @@ export class TestEnvironment {
     this.apiServer = undefined;
     this.etcd = undefined;
     this._config = undefined;
+    this.ca = undefined;
+    this.userKubeconfigNames.clear();
     if (this.workDir) {
       // etcd on Windows can hold file locks for a beat after exit.
       await fsp
