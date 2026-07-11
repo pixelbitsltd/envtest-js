@@ -4,6 +4,7 @@ import "reflect-metadata";
 import { generateKeyPair, randomBytes, webcrypto } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 import * as x509 from "@peculiar/x509";
 
@@ -15,6 +16,23 @@ type CryptoKeyPair = webcrypto.CryptoKeyPair;
 // @peculiar/x509 auto-detects globalThis.crypto (always present on Node >= 19
 // and Bun), so no cryptoProvider.set() call is needed. `webcrypto` here is
 // that same object, imported for its namespaced types.
+
+// getaddrinfo cannot be cancelled and can stall for seconds on names that
+// don't exist — macOS hands *.local names (kubernetes.default.svc.cluster.local
+// is in the default apiserver SAN set) to multicast DNS, which waits ~5s for
+// responses — so serving-cert name resolution gets a bounded wait instead of
+// delaying control-plane startup.
+const LOOKUP_TIMEOUT_MS = 500;
+
+function resolveAddresses(name: string): Promise<string[]> {
+  return Promise.race([
+    lookup(name, { all: true }).then(
+      (addrs) => addrs.map((a) => a.address),
+      () => [],
+    ),
+    sleep(LOOKUP_TIMEOUT_MS, [] as string[], { ref: false }),
+  ]);
+}
 
 const KEY_ALG: webcrypto.EcKeyGenParams = { name: "ECDSA", namedCurve: "P-256" };
 const SIGNING_ALG: webcrypto.EcdsaParams = { name: "ECDSA", hash: "SHA-256" };
@@ -132,22 +150,15 @@ export class TinyCA {
    * they land in the SAN extension. Empty names are skipped, and DNS names
    * are additionally resolved so their addresses become IP SANs, both as
    * upstream's tinyca does — except that upstream fails on resolution errors
-   * while we skip them, because our default apiserver SAN set includes
-   * in-cluster names (kubernetes.default.svc, ...) that never resolve on the
-   * host. Defaults to localhost + loopback.
+   * while we skip them (bounded to LOOKUP_TIMEOUT_MS), because our default
+   * apiserver SAN set includes in-cluster names (kubernetes.default.svc, ...)
+   * that never resolve on the host. Defaults to localhost + loopback.
    */
   async newServingCert(...names: string[]): Promise<CertKeyPair> {
     names = names.filter((n) => n !== "");
     if (names.length === 0) names = ["localhost", "127.0.0.1", "::1"];
     const dnsNames = [...new Set(names.filter((n) => !isIP(n)))];
-    const resolved = await Promise.all(
-      dnsNames.map((n) =>
-        lookup(n, { all: true }).then(
-          (addrs) => addrs.map((a) => a.address),
-          () => [],
-        ),
-      ),
-    );
+    const resolved = await Promise.all(dnsNames.map(resolveAddresses));
     const ips = [...new Set([...names.filter((n) => isIP(n)), ...resolved.flat()])];
     const sans = [
       ...dnsNames.map((n) => new x509.GeneralName("dns", n)),

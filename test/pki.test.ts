@@ -98,7 +98,9 @@ describe("TinyCA", () => {
 
   // Divergence from upstream (which fails hard on resolution errors): the
   // default apiserver SAN set includes in-cluster names that never resolve
-  // on the host, so unresolvable names stay DNS-only.
+  // on the host, so unresolvable names stay DNS-only. The .local name also
+  // pins the lookup-timeout bound: macOS sends *.local to multicast DNS,
+  // which stalls ~5s — without the bound, this test times out there.
   it("keeps unresolvable DNS names as DNS SANs without failing", async () => {
     const ca = await TinyCA.create();
     const serving = await ca.newServingCert("kubernetes.default.svc.cluster.local", "127.0.0.1");
