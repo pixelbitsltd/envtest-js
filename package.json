@@ -1,0 +1,61 @@
+{
+  "name": "envtest-js",
+  "version": "0.1.0",
+  "description": "Run a real Kubernetes API server (kube-apiserver + etcd) for integration tests, envtest-style, from Node or Bun",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vitest": {
+      "types": "./dist/glue/vitest.d.ts",
+      "default": "./dist/glue/vitest.js"
+    },
+    "./bun": {
+      "types": "./dist/glue/bun.d.ts",
+      "default": "./dist/glue/bun.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:bun": "bun test --timeout 120000",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "vitest": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@peculiar/x509": "^1.12.3",
+    "execa": "^9.6.1",
+    "get-port": "^7.2.0",
+    "js-yaml": "^4.1.0",
+    "semver": "^7.8.5",
+    "tar": "^7.4.3"
+  },
+  "devDependencies": {
+    "@kubernetes/client-node": "^1.4.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.13.3",
+    "@types/semver": "^7.7.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

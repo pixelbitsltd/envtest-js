@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # The version-matrix job tests the newest upstream versions resolved at
+    # run time — but push/PR triggers only fire when WE change something,
+    # while the risk runs the other way: Kubernetes publishes new versions
+    # (new entries in envtest-releases.yaml) while this repo sits still, and
+    # a new kube-apiserver may reject our default flag set (flag drift, cf.
+    # --insecure-port removed in 1.24). The weekly run bounds how long such
+    # a break can exist before we notice, instead of a user noticing first.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # envtest-js honors XDG_DATA_HOME on every platform (setup-envtest compat),
+  # which gives all three OSes the same cacheable binary path.
+  XDG_DATA_HOME: ${{ github.workspace }}/.envtest-data
+
+jobs:
+  check:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [24]
+        include:
+          # Newest major on one OS, until it graduates into the full matrix.
+          - os: ubuntu-latest
+            node: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Resolve latest envtest version (cache key)
+        id: envtest
+        shell: bash
+        run: echo "version=$(node scripts/envtest-versions.mjs | tr -d '[]\"')" >> "$GITHUB_OUTPUT"
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: .envtest-data
+          key: envtest-${{ runner.os }}-${{ steps.envtest.outputs.version }}
+      - run: npm test
+
+  bun:
+    name: Bun tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install
+      - name: Resolve latest envtest version (cache key)
+        id: envtest
+        shell: bash
+        run: echo "version=$(bun scripts/envtest-versions.mjs | tr -d '[]\"')" >> "$GITHUB_OUTPUT"
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: .envtest-data
+          key: envtest-${{ runner.os }}-${{ steps.envtest.outputs.version }}
+      - run: bun test --timeout 120000
+
+  resolve-versions:
+    name: Resolve upstream versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      versions: ${{ steps.list.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: List newest stable envtest versions
+        id: list
+        run: echo "versions=$(node scripts/envtest-versions.mjs 4)" >> "$GITHUB_OUTPUT"
+
+  version-matrix:
+    name: e2e against envtest ${{ matrix.version }}
+    needs: resolve-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.resolve-versions.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Cache envtest binaries
+        uses: actions/cache@v4
+        with:
+          path: .envtest-data
+          key: envtest-${{ runner.os }}-${{ matrix.version }}
+      - name: e2e against pinned control plane
+        env:
+          ENVTEST_K8S_VERSION: ${{ matrix.version }}
+        run: npx vitest run test/e2e.test.ts
