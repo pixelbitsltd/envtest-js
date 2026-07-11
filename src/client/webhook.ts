@@ -172,39 +172,63 @@ export async function installWebhooks(
   return manifests.map((m) => m.metadata.name);
 }
 
+export interface WaitForWebhookServerOptions {
+  /**
+   * PEM CA the webhook server's certificate must verify against — pass
+   * config.webhook.caPem (TestEnvironment.waitForWebhookServer does so
+   * automatically). Required: the environment always mints the webhook CA,
+   * so this check proves the server is serving a cert the apiserver will
+   * actually trust, not merely that something is listening.
+   */
+  caPem: string;
+  timeoutMs?: number;
+}
+
 /**
- * Poll until a TLS server accepts connections at host:port — the dial-check
- * from the kubebuilder book's webhook test pattern. Call this after starting
- * your webhook server, before exercising requests that trigger it.
+ * Poll until the webhook server completes a CA-verified TLS handshake at
+ * host:port — the dial-check from the kubebuilder book's webhook test
+ * pattern, with real certificate verification instead of its
+ * InsecureSkipVerify. Call this after starting your webhook server, before
+ * exercising requests that trigger it.
  */
 export async function waitForWebhookServer(
   host: string,
   port: number,
-  timeoutMs = 10_000,
+  opts: WaitForWebhookServerOptions,
 ): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 10_000;
   const deadline = Date.now() + timeoutMs;
+  let lastError: Error | undefined;
   while (Date.now() < deadline) {
-    if (await canConnectTLS(host, port)) return;
+    lastError = await tryConnectTLS(host, port, opts.caPem);
+    if (lastError === undefined) return;
     await sleep(100);
   }
+  const certHint =
+    lastError && /certificate|cert/i.test(lastError.message)
+      ? " — is the server using the certPem/keyPem from config.webhook?"
+      : "";
   throw new Error(
-    `webhook server at ${hostPort(host, port)} did not accept TLS connections within ${timeoutMs}ms`,
+    `webhook server at ${hostPort(host, port)} did not accept verified TLS connections within ${timeoutMs}ms` +
+      (lastError ? ` (last error: ${lastError.message})` : "") +
+      certHint,
   );
 }
 
-function canConnectTLS(host: string, port: number): Promise<boolean> {
+/** Resolves undefined on a successful CA-verified handshake. */
+function tryConnectTLS(host: string, port: number, caPem: string): Promise<Error | undefined> {
   return new Promise((resolve) => {
-    const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => {
+    const socket = tls.connect({ host, port, ca: caPem }, () => {
       socket.destroy();
-      resolve(true);
+      resolve(undefined);
     });
     socket.setTimeout(1_000, () => {
       socket.destroy();
-      resolve(false);
+      resolve(new Error("connection attempt timed out"));
     });
-    socket.on("error", () => {
+    socket.on("error", (err) => {
       socket.destroy();
-      resolve(false);
+      resolve(err);
     });
   });
 }

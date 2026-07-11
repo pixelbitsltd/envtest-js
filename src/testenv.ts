@@ -324,15 +324,16 @@ export class TestEnvironment {
 
   /**
    * Wait until the test's webhook server accepts TLS connections on the
-   * local serving address. Call after starting your HTTPS server (with
-   * config.webhook cert/key), before exercising requests that trigger it.
+   * local serving address, verifying it serves a certificate the apiserver
+   * will trust. Call after starting your HTTPS server (with config.webhook
+   * cert/key), before exercising requests that trigger it.
    */
   async waitForWebhookServer(timeoutMs?: number): Promise<void> {
     const webhook = this.config.webhook;
     if (!webhook) {
       throw new Error("environment was started without webhookInstallOptions");
     }
-    await waitForWebhookServer(webhook.host, webhook.port, timeoutMs);
+    await waitForWebhookServer(webhook.host, webhook.port, { timeoutMs, caPem: webhook.caPem });
   }
 
   /** Tear down the control plane and delete all temporary state. */

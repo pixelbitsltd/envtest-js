@@ -73,7 +73,7 @@ const config = await env.start();
 const wh = config.webhook!; // host, port, certPem/keyPem (+ certDir with tls.crt/tls.key)
 const server = https.createServer({ cert: wh.certPem, key: wh.keyPem }, admissionHandler);
 await new Promise<void>((resolve) => server.listen(wh.port, wh.host, resolve));
-await env.waitForWebhookServer(); // TLS dial-check, like the kubebuilder book pattern
+await env.waitForWebhookServer(); // dial-check verifying the serving cert against the webhook CA
 
 // ...requests matching your webhook rules now round-trip through your handler.
 ```

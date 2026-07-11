@@ -177,7 +177,7 @@ describe("e2e: real control plane", () => {
 
   it("enforces a validating webhook served from the test process", async () => {
     expect(config.webhook!.configurationNames).toEqual(["envtest-deny-labeled"]);
-    await waitForWebhookServer(config.webhook!.host, config.webhook!.port);
+    await waitForWebhookServer(config.webhook!.host, config.webhook!.port, { caPem: config.webhook!.caPem });
 
     // A labeled ConfigMap matches the objectSelector -> apiserver calls our
     // server over HTTPS (trusting the injected caBundle) -> denied.
@@ -201,7 +201,7 @@ describe("e2e: real control plane", () => {
 
   it("routes CRD version conversion through the in-process webhook", async () => {
     expect(config.installedCRDs).toContain("widgets.conversion.example.com");
-    await waitForWebhookServer(config.webhook!.host, config.webhook!.port);
+    await waitForWebhookServer(config.webhook!.host, config.webhook!.port, { caPem: config.webhook!.caPem });
 
     // Stored at v1 (storage version): no conversion involved.
     await restRequestOk(config, "POST", "/apis/conversion.example.com/v1/namespaces/envtest-e2e/widgets", {
