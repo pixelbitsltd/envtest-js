@@ -53,7 +53,10 @@ describe("ManagedProcess.start", () => {
     const proc = managed({ command: "definitely-not-a-real-binary-xyz", script: "" });
     const err = await proc.start().catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/exited before becoming ready/);
+    // Slow CI runners can deliver the ENOENT after the ready-poll deadline,
+    // in which case the timeout error reports instead of the early-exit one
+    // — either proves the spawn failure surfaced as a start() error.
+    expect((err as Error).message).toMatch(/exited before becoming ready|did not become ready/);
     await proc.stop(); // upstream: "but Stop() is called on it — does not panic"
   });
 

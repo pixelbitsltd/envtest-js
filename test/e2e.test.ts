@@ -40,6 +40,12 @@ describe("e2e: real control plane", () => {
   beforeAll(async () => {
     config = await getEnvtestConfig();
     webhookServer = await startTestWebhookServer(config);
+    // Warm kubectl's first execution here, where the timeout is generous:
+    // on Windows, Defender scans a binary the first time it runs (seconds on
+    // CI runners). etcd/kube-apiserver were already executed (and scanned)
+    // by the control-plane boot in global setup; kubectl would otherwise pay
+    // its scan inside whichever test happens to call it first.
+    await execFileP(config.binaries.kubectl, ["version", "--client"]);
   }, 60_000);
 
   afterAll(async () => {
