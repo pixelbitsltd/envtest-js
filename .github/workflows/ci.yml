@@ -126,6 +126,11 @@ jobs:
     needs: [ci-ok]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The npm trusted publisher requires this environment, and the environment
+    # is restricted to deployments from main (repo Settings > Environments).
+    # That branch rule is enforced by GitHub outside this file, so a modified
+    # workflow on a side branch cannot mint an npm publish credential.
+    environment: npm-publish
     # No write permissions on GITHUB_TOKEN: semantic-release authenticates as
     # the release GitHub App instead, which is the ruleset bypass actor for
     # main (the default token can't push there — "changes through PR" rule).
