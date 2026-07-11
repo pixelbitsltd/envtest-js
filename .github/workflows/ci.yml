@@ -126,11 +126,17 @@ jobs:
     needs: [ci-ok]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # No write permissions on GITHUB_TOKEN: semantic-release authenticates as
+    # the release GitHub App instead, which is the ruleset bypass actor for
+    # main (the default token can't push there — "changes through PR" rule).
     permissions:
-      contents: write # push release commit + tag, create the GitHub Release
-      issues: write # comment on issues resolved by the release
-      pull-requests: write # comment on PRs included in the release
+      contents: read
     steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           # semantic-release needs the full history and tags to find the
@@ -143,7 +149,7 @@ jobs:
       - run: npm ci
       - run: npx semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
   resolve-versions:
     name: Resolve upstream versions
