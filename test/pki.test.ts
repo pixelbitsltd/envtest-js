@@ -21,10 +21,13 @@ describe("TinyCA", () => {
   it("mints serving certs with DNS and IP SANs, chained to the CA", async () => {
     const ca = await TinyCA.create();
     const caCert = new X509Certificate(ca.certificatePem);
+    // IPv4/IPv6 literals from the docs blocks (TEST-NET-1, 2001:db8::), as
+    // upstream, proving IP SANs come from the given literals, not resolution.
     const serving = await ca.newServingCert(
       "localhost",
       "127.0.0.1",
       "::1",
+      "192.0.2.1",
       "kubernetes.default.svc",
     );
     const cert = new X509Certificate(serving.certPem);
@@ -37,7 +40,12 @@ describe("TinyCA", () => {
     expect(cert.ca).toBe(false);
     expect(cert.subjectAltName).toContain("DNS:localhost");
     expect(cert.subjectAltName).toContain("IP Address:127.0.0.1");
+    expect(cert.subjectAltName).toContain("IP Address:192.0.2.1");
+    expect(cert.subjectAltName).toMatch(/IP Address:(0:0:0:0:0:0:0:1|::1)/i);
     expect(cert.subjectAltName).toContain("DNS:kubernetes.default.svc");
+    // IP literals must land only as IP SANs, never as DNS SANs.
+    expect(cert.subjectAltName).not.toContain("DNS:127.0.0.1");
+    expect(cert.subjectAltName).not.toContain("DNS:192.0.2.1");
     expect(String(cert.keyUsage)).toMatch(SERVER_AUTH);
     // The private key must pair with the certificate.
     expect(cert.checkPrivateKey(createPrivateKey(serving.keyPem))).toBe(true);
@@ -116,7 +124,8 @@ describe("TinyCA", () => {
     expect(new Set(entries).size).toBe(entries.length);
   });
 
-  // Upstream tinyca_test: "should ignore empty names".
+  // Upstream skips empty names in resolveNames (implementation behavior;
+  // untested upstream).
   it("skips empty serving-cert names", async () => {
     const ca = await TinyCA.create();
     const serving = await ca.newServingCert("", "localhost");

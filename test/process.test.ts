@@ -119,6 +119,44 @@ describe("ManagedProcess readiness polling", () => {
     expect(checks).toBeLessThanOrEqual(6);
   });
 
+  // Upstream: "when the healthcheck isn't even listening" — connection
+  // errors keep polling until the timeout instead of propagating.
+  it("treats ready-check errors as not-ready and times out", async () => {
+    let checks = 0;
+    const proc = managed({
+      script: HANG,
+      readyCheck: async () => {
+        checks++;
+        throw new Error("connect ECONNREFUSED");
+      },
+      startTimeoutMs: 500,
+    });
+    const err = await proc.start().catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/did not become ready within 500ms/);
+    expect(checks).toBeGreaterThanOrEqual(2);
+  });
+
+  // Upstream: a start timeout also stops the process (Eventually(Exited))
+  // and the health checker (the request count stays put afterwards).
+  it("stops the process and the polling after a startup timeout", async () => {
+    let checks = 0;
+    const proc = managed({
+      script: HANG,
+      readyCheck: async () => {
+        checks++;
+        return false;
+      },
+      startTimeoutMs: 400,
+    });
+    await proc.start().catch(() => {});
+    // start() awaits the kill before reporting the timeout, so the child is
+    // already gone: probing it (signal 0) must fail.
+    expect(() => process.kill(proc.pid!, 0)).toThrow();
+    const checksAtFailure = checks;
+    await new Promise((r) => setTimeout(r, 400));
+    expect(checks).toBe(checksAtFailure);
+  });
+
   it("rejects a non-positive poll interval", () => {
     expect(() => managed({ script: HANG, readyPollIntervalMs: 0 })).toThrow(
       /readyPollIntervalMs must be a positive number/,
