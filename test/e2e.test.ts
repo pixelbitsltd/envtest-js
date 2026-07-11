@@ -137,6 +137,27 @@ describe("e2e: real control plane", () => {
     ]);
   });
 
+  // Upstream: "should not return an error if the directory doesn't exist"
+  // (there the silent skip is the default; here it's opt-in via
+  // errorIfPathMissing: false — our default is to throw, see crd.test.ts).
+  it("skips missing paths when errorIfPathMissing is disabled", async () => {
+    const names = await installCRDs(
+      config,
+      [path.join(FIXTURES, "does-not-exist"), path.join(FIXTURES, "crontab-crd.yaml")],
+      { errorIfPathMissing: false },
+    );
+    expect(names).toEqual(["crontabs.stable.example.com"]);
+  });
+
+  // Upstream: CRDInstallOptions.PollInterval — the Established wait honors a
+  // configured poll interval instead of the fixed default.
+  it("waits for Established at a configured poll interval", async () => {
+    const names = await installCRDs(config, [path.join(FIXTURES, "crontab-crd.yaml")], {
+      pollIntervalMs: 10,
+    });
+    expect(names).toEqual(["crontabs.stable.example.com"]);
+  });
+
   // Upstream: CRDInstallOptions.CRDs — in-memory definitions install
   // alongside (before) those rendered from paths, and can be uninstalled
   // the same way.

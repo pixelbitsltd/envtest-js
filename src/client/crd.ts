@@ -17,8 +17,20 @@ export interface InstallCRDsOptions {
    * never mutated.
    */
   crds?: CRDManifest[];
+  /**
+   * Whether a non-existent entry in `paths` is an error (upstream:
+   * CRDInstallOptions.ErrorIfPathMissing). Defaults to true — deliberately
+   * stricter than upstream, which silently skips missing paths by default.
+   * Set false for upstream-style skipping.
+   */
+  errorIfPathMissing?: boolean;
   /** Max time to wait for each CRD to reach the Established condition. */
   establishTimeoutMs?: number;
+  /**
+   * Interval between checks of the Established condition (upstream:
+   * CRDInstallOptions.PollInterval). Default 100ms.
+   */
+  pollIntervalMs?: number;
   /**
    * Local webhook serving details. When set, CRDs declaring
    * `spec.conversion.strategy: Webhook` get their conversion clientConfig
@@ -41,7 +53,10 @@ export async function installCRDs(
   paths: string[],
   opts: InstallCRDsOptions = {},
 ): Promise<string[]> {
-  let crds = [...validateCRDManifests(opts.crds ?? []), ...(await readCRDManifests(paths))];
+  let crds = [
+    ...validateCRDManifests(opts.crds ?? []),
+    ...(await readCRDManifests(paths, opts.errorIfPathMissing ?? true)),
+  ];
   if (opts.conversionWebhook) {
     const { host, port, caPem } = opts.conversionWebhook;
     crds = rewriteConversionWebhooks(crds, host, port, caPem);
@@ -50,8 +65,9 @@ export async function installCRDs(
     await createOrReplace(config, CRD_BASE, crd);
   }
   const timeout = opts.establishTimeoutMs ?? 30_000;
+  const pollInterval = opts.pollIntervalMs ?? 100;
   for (const crd of crds) {
-    await waitForEstablished(config, crd.metadata.name, timeout);
+    await waitForEstablished(config, crd.metadata.name, timeout, pollInterval);
   }
   return crds.map((c) => c.metadata.name);
 }
@@ -68,9 +84,12 @@ export async function installCRDs(
 export async function uninstallCRDs(
   config: RestConfig,
   paths: string[],
-  opts: Pick<InstallCRDsOptions, "crds"> = {},
+  opts: Pick<InstallCRDsOptions, "crds" | "errorIfPathMissing"> = {},
 ): Promise<string[]> {
-  const crds = [...validateCRDManifests(opts.crds ?? []), ...(await readCRDManifests(paths))];
+  const crds = [
+    ...validateCRDManifests(opts.crds ?? []),
+    ...(await readCRDManifests(paths, opts.errorIfPathMissing ?? true)),
+  ];
   const deleted: string[] = [];
   for (const crd of crds) {
     const name = crd.metadata.name;
@@ -113,10 +132,22 @@ function validateCRDManifests(crds: CRDManifest[]): CRDManifest[] {
   return crds;
 }
 
-async function readCRDManifests(paths: string[]): Promise<CRDManifest[]> {
+async function readCRDManifests(
+  paths: string[],
+  errorIfPathMissing: boolean,
+): Promise<CRDManifest[]> {
   const files: string[] = [];
   for (const p of paths) {
-    const stat = await fsp.stat(p);
+    let stat;
+    try {
+      stat = await fsp.stat(p);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        if (errorIfPathMissing) throw new Error(`CRD path does not exist: ${p}`);
+        continue;
+      }
+      throw err;
+    }
     if (stat.isDirectory()) {
       // Like upstream: non-recursive read of manifest files in the directory.
       for (const entry of await fsp.readdir(p)) {
@@ -148,6 +179,7 @@ async function waitForEstablished(
   config: RestConfig,
   name: string,
   timeoutMs: number,
+  pollIntervalMs: number,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastState = "no conditions reported yet";
@@ -164,7 +196,7 @@ async function waitForEstablished(
       }
       lastState = JSON.stringify(conditions);
     }
-    await sleep(100);
+    await sleep(pollIntervalMs);
   }
   throw new Error(`CRD ${name} did not become Established within ${timeoutMs}ms (${lastState})`);
 }

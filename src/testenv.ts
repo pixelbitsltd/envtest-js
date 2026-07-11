@@ -339,7 +339,10 @@ export class TestEnvironment {
   }
 
   /** Delete the CRDs named by the given manifests from the running environment. */
-  async uninstallCRDs(paths: string[], opts?: Pick<InstallCRDsOptions, "crds">): Promise<string[]> {
+  async uninstallCRDs(
+    paths: string[],
+    opts?: Pick<InstallCRDsOptions, "crds" | "errorIfPathMissing">,
+  ): Promise<string[]> {
     return uninstallCRDs(this.config, paths, opts);
   }
 
